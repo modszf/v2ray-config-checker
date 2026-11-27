@@ -16,6 +16,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import urllib.request
 from urllib.parse import parse_qs, unquote, urlsplit
 
 INBOUND_PROTOCOLS = {
@@ -310,6 +311,25 @@ def tcp_connect(host, port, timeout=5.0):
         return False, f"TCP connect failed: {e}"
 
 
+def geolocate(host, timeout=5.0):
+    """Return a location string like 'Singapore, Singapore (SG)' for a host/IP,
+    or None if the lookup fails. Uses the free ip-api.com service."""
+    try:
+        ip = socket.gethostbyname(host)
+        req = urllib.request.Request(
+            f"http://ip-api.com/json/{ip}?fields=status,country,countryCode,city",
+            headers={"User-Agent": "v2ray-config-checker"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            d = json.load(r)
+    except (OSError, ValueError):
+        return None
+    if d.get("status") != "success":
+        return None
+    parts = [x for x in (d.get("city"), d.get("country")) if x]
+    loc = ", ".join(parts) or "Unknown"
+    return f"{loc} ({d['countryCode']})" if d.get("countryCode") else loc
+
+
 def run_binary(path, binary):
     exe = shutil.which(binary)
     if not exe:
@@ -348,6 +368,8 @@ def main(argv=None):
                     help="config files or ss:// vmess:// vless:// trojan:// URLs")
     ap.add_argument("--connect", action="store_true",
                     help="for URLs, also test TCP reachability of the server")
+    ap.add_argument("--no-geo", action="store_true",
+                    help="skip IP location lookup for URLs that pass --connect")
     ap.add_argument("--timeout", type=float, default=5.0)
     ap.add_argument("--run", action="store_true",
                     help="also test with the v2ray/xray binary")
@@ -367,6 +389,8 @@ def main(argv=None):
                 print(f"  error: {e}")
             for w in warnings:
                 print(f"  warning: {w}")
+            if info and a.connect and not errors and not a.no_geo:
+                print(f"  location: {geolocate(info['host'], a.timeout) or 'unknown'}")
             bad += bool(errors)
             continue
         errors, warnings = check_file(path, a.run, a.binary)

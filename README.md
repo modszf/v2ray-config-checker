@@ -20,3 +20,6 @@ Add `--connect` to also test TCP reachability of the server:
 ```
 python v2ray_checker.py 'ss://...@1.2.3.4:59036?type=tcp#name' --connect
 ```
+
+When `--connect` succeeds, the server's IP location (e.g. `Singapore, Singapore (SG)`) is printed
+using ip-api.com. Use `--no-geo` to skip the lookup.

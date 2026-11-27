@@ -58,3 +58,17 @@ def test_vless_url_with_html_entities():
     errs, _, info = c.validate_url(u)
     assert errs == []
     assert info["port"] == 22222 and info["params"]["security"] == "none"
+
+
+def test_geolocate(monkeypatch=None):
+    import io, json
+    class R(io.StringIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+    orig = c.urllib.request.urlopen
+    c.urllib.request.urlopen = lambda *a, **k: R(json.dumps(
+        {"status": "success", "country": "Singapore", "countryCode": "SG", "city": "Singapore"}))
+    try:
+        assert c.geolocate("127.0.0.1") == "Singapore, Singapore (SG)"
+    finally:
+        c.urllib.request.urlopen = orig
