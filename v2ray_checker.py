@@ -8,10 +8,14 @@ Static checks are always performed. With --run, the config is also tested
 by the v2ray/xray binary (`<binary> test -c <file>`, falling back to `-test`).
 """
 import argparse
+import base64
+import binascii
 import json
 import shutil
+import socket
 import subprocess
 import sys
+from urllib.parse import parse_qs, unquote, urlsplit
 
 INBOUND_PROTOCOLS = {
     "dokodemo-door", "http", "mtproto", "shadowsocks", "socks",
@@ -188,6 +192,123 @@ def validate(cfg):
     return errors, warnings
 
 
+SS_METHODS = {
+    "aes-128-gcm", "aes-192-gcm", "aes-256-gcm", "chacha20-poly1305",
+    "chacha20-ietf-poly1305", "xchacha20-poly1305", "xchacha20-ietf-poly1305",
+    "none", "plain", "aes-128-cfb", "aes-192-cfb", "aes-256-cfb",
+    "aes-128-ctr", "aes-192-ctr", "aes-256-ctr", "rc4-md5", "chacha20",
+    "chacha20-ietf", "2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm",
+    "2022-blake3-chacha20-poly1305",
+}
+URL_SCHEMES = ("ss", "vmess", "vless", "trojan")
+
+
+def _b64decode(data):
+    data = unquote(data).strip()
+    data += "=" * (-len(data) % 4)
+    try:
+        return base64.b64decode(data, altchars=b"-_", validate=False).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError, ValueError):
+        raise ValueError("invalid base64 payload")
+
+
+def parse_url(url):
+    """Parse a share URL (ss/vmess/vless/trojan) into a dict:
+    {scheme, name, host, port, params, method, password, id}."""
+    url = url.strip()
+    scheme = url.split("://", 1)[0].lower() if "://" in url else ""
+    if scheme not in URL_SCHEMES:
+        raise ValueError(f"unsupported or missing scheme (expected one of {', '.join(URL_SCHEMES)})")
+    rest = url.split("://", 1)[1]
+    if scheme == "vmess":
+        body = rest.split("#", 1)[0]
+        try:
+            j = json.loads(_b64decode(body))
+        except json.JSONDecodeError:
+            raise ValueError("vmess payload is not valid JSON")
+        if not isinstance(j, dict):
+            raise ValueError("vmess payload must be a JSON object")
+        try:
+            port = int(j.get("port"))
+        except (TypeError, ValueError):
+            raise ValueError(f"invalid port {j.get('port')!r}")
+        return {"scheme": scheme, "name": j.get("ps", ""), "host": j.get("add", ""),
+                "port": port, "id": j.get("id", ""),
+                "params": {"type": j.get("net", "tcp"), "security": j.get("tls", "")}}
+    frag = ""
+    if "#" in rest:
+        rest, frag = rest.split("#", 1)
+    out = {"scheme": scheme, "name": unquote(frag), "method": "", "password": "", "id": ""}
+    if scheme == "ss" and "@" not in rest.split("?", 1)[0]:
+        # legacy form: base64(method:password@host:port)
+        b, _, q = rest.partition("?")
+        rest = _b64decode(b.rstrip("/")) + ("?" + q if q else "")
+    u = urlsplit("//" + rest)
+    try:
+        port = u.port
+    except ValueError:
+        raise ValueError("invalid port")
+    if port is None:
+        raise ValueError("missing port")
+    out["host"] = u.hostname or ""
+    out["port"] = port
+    out["params"] = {k: v[0] for k, v in parse_qs(u.query).items()}
+    userinfo = unquote(u.netloc.rpartition("@")[0]) if "@" in u.netloc else ""
+    if scheme == "ss":
+        if ":" not in userinfo:
+            userinfo = _b64decode(userinfo)
+        if ":" not in userinfo:
+            raise ValueError("userinfo must be method:password")
+        out["method"], out["password"] = userinfo.split(":", 1)
+    elif scheme == "trojan":
+        out["password"] = userinfo
+    else:
+        out["id"] = userinfo
+    return out
+
+
+def validate_url(url):
+    """Return (errors, warnings, info) for a share URL."""
+    errors, warnings = [], []
+    try:
+        info = parse_url(url)
+    except ValueError as e:
+        return [str(e)], warnings, None
+    if not info["host"]:
+        errors.append("missing host")
+    if not _port_ok(info["port"]):
+        errors.append(f"invalid port {info['port']!r}")
+    sc = info["scheme"]
+    if sc == "ss":
+        if not info["method"]:
+            errors.append("missing cipher method")
+        elif info["method"].lower() not in SS_METHODS:
+            errors.append(f"unknown shadowsocks method '{info['method']}'")
+        if not info["password"]:
+            errors.append("missing password")
+    elif sc == "trojan" and not info["password"]:
+        errors.append("missing password")
+    elif sc in ("vmess", "vless") and not info["id"]:
+        errors.append("missing user id")
+    net = info["params"].get("type", "tcp")
+    if net not in NETWORKS:
+        errors.append(f"unknown network type '{net}'")
+    sec = info["params"].get("security", "")
+    if sec not in SECURITY:
+        errors.append(f"unknown security '{sec}'")
+    if not info["name"]:
+        warnings.append("no #name remark")
+    return errors, warnings, info
+
+
+def tcp_connect(host, port, timeout=5.0):
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True, "TCP connect OK"
+    except OSError as e:
+        return False, f"TCP connect failed: {e}"
+
+
 def run_binary(path, binary):
     exe = shutil.which(binary)
     if not exe:
@@ -222,13 +343,31 @@ def check_file(path, run=False, binary="v2ray"):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("files", nargs="+")
+    ap.add_argument("files", nargs="+",
+                    help="config files or ss:// vmess:// vless:// trojan:// URLs")
+    ap.add_argument("--connect", action="store_true",
+                    help="for URLs, also test TCP reachability of the server")
+    ap.add_argument("--timeout", type=float, default=5.0)
     ap.add_argument("--run", action="store_true",
                     help="also test with the v2ray/xray binary")
     ap.add_argument("--binary", default="v2ray")
     a = ap.parse_args(argv)
     bad = 0
     for path in a.files:
+        if "://" in path:
+            errors, warnings, info = validate_url(path)
+            if info and a.connect and not errors:
+                ok, msg = tcp_connect(info["host"], info["port"], a.timeout)
+                if not ok:
+                    errors.append(msg)
+            label = f"{info['scheme']}://{info['host']}:{info['port']} ({info['name']})" if info else path
+            print(f"{label}: {'FAIL' if errors else 'OK'}")
+            for e in errors:
+                print(f"  error: {e}")
+            for w in warnings:
+                print(f"  warning: {w}")
+            bad += bool(errors)
+            continue
         errors, warnings = check_file(path, a.run, a.binary)
         print(f"{path}: {'FAIL' if errors else 'OK'}")
         for e in errors:

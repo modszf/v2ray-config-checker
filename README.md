@@ -11,3 +11,12 @@ Performs static validation (JSON syntax, inbounds/outbounds, ports, tags, routin
 With `--run`, also tests the config using the v2ray/xray binary. Exit code is 1 if any config fails.
 
 Tests: `pytest`
+
+## Share URLs
+
+`ss://`, `vmess://`, `vless://` and `trojan://` URLs can be passed instead of files; they are parsed and validated.
+Add `--connect` to also test TCP reachability of the server:
+
+```
+python v2ray_checker.py 'ss://...@1.2.3.4:59036?type=tcp#name' --connect
+```

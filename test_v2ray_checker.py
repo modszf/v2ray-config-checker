@@ -33,3 +33,20 @@ def test_invalid_json(tmp_path):
     p = tmp_path / "x.json"
     p.write_text("{")
     assert c.check_file(str(p))[0]
+
+
+SS = ("ss://YWVzLTI1Ni1nY206OTNwak9ZaFlmV1B2blVxc0tqZFZxdjJVU0RuaHdrWHBsQStWUDZhMExKWT0"
+      "@103.114.203.175:59036?type=tcp#Myanmar-Free8")
+
+
+def test_ss_url():
+    errs, _, info = c.validate_url(SS)
+    assert errs == []
+    assert info["method"] == "aes-256-gcm"
+    assert (info["host"], info["port"], info["name"]) == ("103.114.203.175", 59036, "Myanmar-Free8")
+
+
+def test_bad_urls():
+    assert c.validate_url("ss://abc@h:99999")[0]
+    assert c.validate_url("http://x")[0]
+    assert c.validate_url("ss://YmFkbWV0aG9kOnB3@h:1")[0]
