@@ -10,6 +10,7 @@ by the v2ray/xray binary (`<binary> test -c <file>`, falling back to `-test`).
 import argparse
 import base64
 import binascii
+import html
 import json
 import shutil
 import socket
@@ -215,7 +216,7 @@ def _b64decode(data):
 def parse_url(url):
     """Parse a share URL (ss/vmess/vless/trojan) into a dict:
     {scheme, name, host, port, params, method, password, id}."""
-    url = url.strip()
+    url = html.unescape(url.strip())
     scheme = url.split("://", 1)[0].lower() if "://" in url else ""
     if scheme not in URL_SCHEMES:
         raise ValueError(f"unsupported or missing scheme (expected one of {', '.join(URL_SCHEMES)})")

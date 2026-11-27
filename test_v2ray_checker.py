@@ -50,3 +50,11 @@ def test_bad_urls():
     assert c.validate_url("ss://abc@h:99999")[0]
     assert c.validate_url("http://x")[0]
     assert c.validate_url("ss://YmFkbWV0aG9kOnB3@h:1")[0]
+
+
+def test_vless_url_with_html_entities():
+    u = ("vless://e4514801-0d5a-42ba-869f-39bd605aef9e@35.180.170.76:22222"
+         "?encryption=none&amp;security=none&amp;type=tcp#(S103)t.me/PrivateVPNs")
+    errs, _, info = c.validate_url(u)
+    assert errs == []
+    assert info["port"] == 22222 and info["params"]["security"] == "none"
